@@ -100,7 +100,7 @@ func (iter *FileIter) Next() (*File, error) {
 
 		blob, err := GetBlob(iter.s, entry.Hash)
 		if err != nil {
-			log.Printf("Blob %s not found, err: %s", name, err)
+			log.Printf("Can't get blob %s: %s", name, err)
 			continue
 		}
 
