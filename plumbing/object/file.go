@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"io"
+	"log"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/filemode"
@@ -99,7 +100,8 @@ func (iter *FileIter) Next() (*File, error) {
 
 		blob, err := GetBlob(iter.s, entry.Hash)
 		if err != nil {
-			return nil, err
+			log.Printf("Blob %s not found, err: %s", name, err)
+			continue
 		}
 
 		return NewFile(name, entry.Mode, blob), nil
