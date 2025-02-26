@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
-	"github.com/go-git/go-git/v5/plumbing/format/commitgraph"
+	commitgraph "github.com/go-git/go-git/v5/plumbing/format/commitgraph/v2"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 
@@ -22,7 +22,7 @@ type CommitNodeSuite struct {
 
 var _ = Suite(&CommitNodeSuite{})
 
-func unpackRepositry(f *fixtures.Fixture) *filesystem.Storage {
+func unpackRepository(f *fixtures.Fixture) *filesystem.Storage {
 	storer := filesystem.NewStorage(f.DotGit(), cache.NewObjectLRUDefault())
 	p := f.Packfile()
 	defer p.Close()
@@ -99,7 +99,7 @@ func testCommitAndTree(c *C, nodeIndex CommitNodeIndex) {
 
 func (s *CommitNodeSuite) TestObjectGraph(c *C) {
 	f := fixtures.ByTag("commit-graph").One()
-	storer := unpackRepositry(f)
+	storer := unpackRepository(f)
 
 	nodeIndex := NewObjectCommitNodeIndex(storer)
 	testWalker(c, nodeIndex)
@@ -109,12 +109,13 @@ func (s *CommitNodeSuite) TestObjectGraph(c *C) {
 
 func (s *CommitNodeSuite) TestCommitGraph(c *C) {
 	f := fixtures.ByTag("commit-graph").One()
-	storer := unpackRepositry(f)
+	storer := unpackRepository(f)
 	reader, err := storer.Filesystem().Open(path.Join("objects", "info", "commit-graph"))
 	c.Assert(err, IsNil)
 	defer reader.Close()
 	index, err := commitgraph.OpenFileIndex(reader)
 	c.Assert(err, IsNil)
+	defer index.Close()
 
 	nodeIndex := NewGraphCommitNodeIndex(index, storer)
 	testWalker(c, nodeIndex)
@@ -124,7 +125,7 @@ func (s *CommitNodeSuite) TestCommitGraph(c *C) {
 
 func (s *CommitNodeSuite) TestMixedGraph(c *C) {
 	f := fixtures.ByTag("commit-graph").One()
-	storer := unpackRepositry(f)
+	storer := unpackRepository(f)
 
 	// Take the commit-graph file and copy it to memory index without the last commit
 	reader, err := storer.Filesystem().Open(path.Join("objects", "info", "commit-graph"))
@@ -132,10 +133,14 @@ func (s *CommitNodeSuite) TestMixedGraph(c *C) {
 	defer reader.Close()
 	fileIndex, err := commitgraph.OpenFileIndex(reader)
 	c.Assert(err, IsNil)
+	defer fileIndex.Close()
+
 	memoryIndex := commitgraph.NewMemoryIndex()
+	defer memoryIndex.Close()
+
 	for i, hash := range fileIndex.Hashes() {
 		if hash.String() != "b9d69064b190e7aedccf84731ca1d917871f8a1c" {
-			node, err := fileIndex.GetCommitDataByIndex(i)
+			node, err := fileIndex.GetCommitDataByIndex(uint32(i))
 			c.Assert(err, IsNil)
 			memoryIndex.Add(hash, node)
 		}

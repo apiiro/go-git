@@ -1,8 +1,8 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -33,11 +33,16 @@ func (s *BaseSuite) SetUpTest(c *C) {
 		See https://github.com/git-for-windows/git/issues/907`)
 	}
 
-	var err error
+	cmd := exec.Command("git", "daemon", "--help")
+	output, err := cmd.CombinedOutput()
+	if err != nil && bytes.Contains(output, []byte("'daemon' is not a git command")) {
+		c.Fatal("git daemon cannot be found")
+	}
+
 	s.port, err = freePort()
 	c.Assert(err, IsNil)
 
-	s.base, err = ioutil.TempDir(os.TempDir(), fmt.Sprintf("go-git-protocol-%d", s.port))
+	s.base, err = os.MkdirTemp(c.MkDir(), fmt.Sprintf("go-git-protocol-%d", s.port))
 	c.Assert(err, IsNil)
 }
 
@@ -86,11 +91,10 @@ func (s *BaseSuite) prepareRepository(c *C, f *fixtures.Fixture, name string) *t
 }
 
 func (s *BaseSuite) TearDownTest(c *C) {
-	_ = s.daemon.Process.Signal(os.Kill)
-	_ = s.daemon.Wait()
-
-	err := os.RemoveAll(s.base)
-	c.Assert(err, IsNil)
+	if s.daemon != nil {
+		_ = s.daemon.Process.Signal(os.Kill)
+		_ = s.daemon.Wait()
+	}
 }
 
 func freePort() (int, error) {

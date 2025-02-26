@@ -1,16 +1,15 @@
 // Package test implements common test suite for different transport
 // implementations.
-//
 package test
 
 import (
 	"bytes"
 	"context"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
+	. "github.com/go-git/go-git/v5/internal/test"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -44,7 +43,7 @@ func (s *ReceivePackSuite) TestAdvertisedReferencesNotExists(c *C) {
 	r, err := s.Client.NewReceivePackSession(s.NonExistentEndpoint, s.EmptyAuth)
 	c.Assert(err, IsNil)
 	ar, err := r.AdvertisedReferences()
-	c.Assert(err, Equals, transport.ErrRepositoryNotFound)
+	c.Assert(err, ErrorIs, transport.ErrRepositoryNotFound)
 	c.Assert(ar, IsNil)
 	c.Assert(r.Close(), IsNil)
 
@@ -56,7 +55,7 @@ func (s *ReceivePackSuite) TestAdvertisedReferencesNotExists(c *C) {
 	}
 
 	writer, err := r.ReceivePack(context.Background(), req)
-	c.Assert(err, Equals, transport.ErrRepositoryNotFound)
+	c.Assert(err, ErrorIs, transport.ErrRepositoryNotFound)
 	c.Assert(writer, IsNil)
 	c.Assert(r.Close(), IsNil)
 }
@@ -235,7 +234,7 @@ func (s *ReceivePackSuite) receivePackNoCheck(c *C, ep *transport.Endpoint,
 
 	if rootPath != "" && err == nil && stat.IsDir() {
 		objectPath := filepath.Join(rootPath, "objects/pack")
-		files, err := ioutil.ReadDir(objectPath)
+		files, err := os.ReadDir(objectPath)
 		c.Assert(err, IsNil)
 
 		for _, file := range files {
@@ -371,5 +370,5 @@ func (s *ReceivePackSuite) emptyPackfile() io.ReadCloser {
 		panic(err)
 	}
 
-	return ioutil.NopCloser(&buf)
+	return io.NopCloser(&buf)
 }

@@ -2,8 +2,11 @@ package gitattributes
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-billy/v5"
+
 	"github.com/go-git/go-git/v5/plumbing/format/config"
 	gioutil "github.com/go-git/go-git/v5/utils/ioutil"
 )
@@ -25,6 +28,8 @@ func ReadAttributesFile(fs billy.Filesystem, path []string, attributesFile strin
 	if err != nil {
 		return nil, err
 	}
+
+	defer gioutil.CheckClose(f, &err)
 
 	return ReadAttributes(f, path, allowMacro)
 }
@@ -56,7 +61,14 @@ func walkDirectory(fs billy.Filesystem, root []string) (attributes []MatchAttrib
 			continue
 		}
 
-		path := append(root, fi.Name())
+		p := fi.Name()
+
+		// Handles the case whereby just the volume name ("C:") is appended,
+		// to root. Change it to "C:\", which is better handled by fs.Join().
+		if filepath.VolumeName(p) != "" && !strings.HasSuffix(p, string(filepath.Separator)) {
+			p = p + string(filepath.Separator)
+		}
+		path := append(root, p)
 
 		dirAttributes, err := ReadAttributesFile(fs, path, gitattributesFile, false)
 		if err != nil {

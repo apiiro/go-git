@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/pktline"
+	"github.com/go-git/go-git/v5/plumbing/hash"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 
 	. "gopkg.in/check.v1"
@@ -119,8 +120,8 @@ type byHash []plumbing.Hash
 func (a byHash) Len() int      { return len(a) }
 func (a byHash) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a byHash) Less(i, j int) bool {
-	ii := [20]byte(a[i])
-	jj := [20]byte(a[j])
+	ii := [hash.Size]byte(a[i])
+	jj := [hash.Size]byte(a[j])
 	return bytes.Compare(ii[:], jj[:]) < 0
 }
 
@@ -397,7 +398,7 @@ func (s *UlReqDecodeSuite) TestDeepenCommits(c *C) {
 	c.Assert(int(commits), Equals, 1234)
 }
 
-func (s *UlReqDecodeSuite) TestDeepenCommitsInfiniteInplicit(c *C) {
+func (s *UlReqDecodeSuite) TestDeepenCommitsInfiniteImplicit(c *C) {
 	payloads := []string{
 		"want 3333333333333333333333333333333333333333 ofs-delta multi_ack",
 		"deepen 0",

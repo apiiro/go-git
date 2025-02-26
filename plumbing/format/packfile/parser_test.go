@@ -82,7 +82,7 @@ func (s *ParserSuite) TestParserHashes(c *C) {
 }
 
 func (s *ParserSuite) TestThinPack(c *C) {
-	fs := osfs.New(os.TempDir())
+	fs := osfs.New(c.MkDir())
 	path, err := util.TempDir(fs, "", "")
 	c.Assert(err, IsNil)
 
@@ -136,6 +136,19 @@ func (s *ParserSuite) TestThinPack(c *C) {
 
 func (s *ParserSuite) TestResolveExternalRefsInThinPack(c *C) {
 	extRefsThinPack := fixtures.ByTag("codecommit").One()
+
+	scanner := packfile.NewScanner(extRefsThinPack.Packfile())
+
+	obs := new(testObserver)
+	parser, err := packfile.NewParser(scanner, obs)
+	c.Assert(err, IsNil)
+
+	_, err = parser.Parse()
+	c.Assert(err, IsNil)
+}
+
+func (s *ParserSuite) TestResolveExternalRefs(c *C) {
+	extRefsThinPack := fixtures.ByTag("delta-before-base").One()
 
 	scanner := packfile.NewScanner(extRefsThinPack.Packfile())
 

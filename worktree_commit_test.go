@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	fixtures "github.com/go-git/go-git-fixtures/v4"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -26,10 +27,16 @@ import (
 )
 
 func (s *WorktreeSuite) TestCommitEmptyOptions(c *C) {
-	r, err := Init(memory.NewStorage(), memfs.New())
+	fs := memfs.New()
+	r, err := Init(memory.NewStorage(), fs)
 	c.Assert(err, IsNil)
 
 	w, err := r.Worktree()
+	c.Assert(err, IsNil)
+
+	util.WriteFile(fs, "foo", []byte("foo"), 0644)
+
+	_, err = w.Add("foo")
 	c.Assert(err, IsNil)
 
 	hash, err := w.Commit("foo", &CommitOptions{})
@@ -65,9 +72,135 @@ func (s *WorktreeSuite) TestCommitInitial(c *C) {
 	assertStorageStatus(c, r, 1, 1, 1, expected)
 }
 
+func (s *WorktreeSuite) TestNothingToCommit(c *C) {
+	expected := plumbing.NewHash("838ea833ce893e8555907e5ef224aa076f5e274a")
+
+	r, err := Init(memory.NewStorage(), memfs.New())
+	c.Assert(err, IsNil)
+
+	w, err := r.Worktree()
+	c.Assert(err, IsNil)
+
+	hash, err := w.Commit("failed empty commit\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(hash, Equals, plumbing.ZeroHash)
+	c.Assert(err, Equals, ErrEmptyCommit)
+
+	hash, err = w.Commit("enable empty commits\n", &CommitOptions{Author: defaultSignature(), AllowEmptyCommits: true})
+	c.Assert(hash, Equals, expected)
+	c.Assert(err, IsNil)
+}
+
+func (s *WorktreeSuite) TestNothingToCommitNonEmptyRepo(c *C) {
+	fs := memfs.New()
+	r, err := Init(memory.NewStorage(), fs)
+	c.Assert(err, IsNil)
+
+	w, err := r.Worktree()
+	c.Assert(err, IsNil)
+
+	err = util.WriteFile(fs, "foo", []byte("foo"), 0644)
+	c.Assert(err, IsNil)
+
+	w.Add("foo")
+	_, err = w.Commit("previous commit\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+
+	hash, err := w.Commit("failed empty commit\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(hash, Equals, plumbing.ZeroHash)
+	c.Assert(err, Equals, ErrEmptyCommit)
+
+	_, err = w.Commit("enable empty commits\n", &CommitOptions{Author: defaultSignature(), AllowEmptyCommits: true})
+	c.Assert(err, IsNil)
+}
+
+func (s *WorktreeSuite) TestRemoveAndCommitToMakeEmptyRepo(c *C) {
+	fs := memfs.New()
+	r, err := Init(memory.NewStorage(), fs)
+	c.Assert(err, IsNil)
+
+	w, err := r.Worktree()
+	c.Assert(err, IsNil)
+
+	err = util.WriteFile(fs, "foo", []byte("foo"), 0644)
+	c.Assert(err, IsNil)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	_, err = w.Commit("Add in Repo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+
+	err = fs.Remove("foo")
+	c.Assert(err, IsNil)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	_, err = w.Commit("Remove foo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+}
+
 func (s *WorktreeSuite) TestCommitParent(c *C) {
 	expected := plumbing.NewHash("ef3ca05477530b37f48564be33ddd48063fc7a22")
 
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{})
+	c.Assert(err, IsNil)
+
+	err = util.WriteFile(fs, "foo", []byte("foo"), 0644)
+	c.Assert(err, IsNil)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	hash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(hash, Equals, expected)
+	c.Assert(err, IsNil)
+
+	assertStorageStatus(c, s.Repository, 13, 11, 10, expected)
+}
+
+func (s *WorktreeSuite) TestCommitAmendWithoutChanges(c *C) {
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{})
+	c.Assert(err, IsNil)
+
+	err = util.WriteFile(fs, "foo", []byte("foo"), 0644)
+	c.Assert(err, IsNil)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	prevHash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+
+	amendedHash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature(), Amend: true})
+	c.Assert(err, IsNil)
+
+	headRef, err := w.r.Head()
+	c.Assert(err, IsNil)
+
+	c.Assert(amendedHash, Equals, headRef.Hash())
+	c.Assert(amendedHash, Equals, prevHash)
+
+	commit, err := w.r.CommitObject(headRef.Hash())
+	c.Assert(err, IsNil)
+	c.Assert(commit.Message, Equals, "foo\n")
+
+	assertStorageStatus(c, s.Repository, 13, 11, 10, amendedHash)
+}
+
+func (s *WorktreeSuite) TestCommitAmendWithChanges(c *C) {
 	fs := memfs.New()
 	w := &Worktree{
 		r:          s.Repository,
@@ -82,11 +215,185 @@ func (s *WorktreeSuite) TestCommitParent(c *C) {
 	_, err = w.Add("foo")
 	c.Assert(err, IsNil)
 
-	hash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature()})
+	_, err = w.Commit("foo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+
+	util.WriteFile(fs, "bar", []byte("bar"), 0644)
+
+	_, err = w.Add("bar")
+	c.Assert(err, IsNil)
+
+	amendedHash, err := w.Commit("bar\n", &CommitOptions{Amend: true})
+	c.Assert(err, IsNil)
+
+	headRef, err := w.r.Head()
+	c.Assert(err, IsNil)
+
+	c.Assert(amendedHash, Equals, headRef.Hash())
+
+	commit, err := w.r.CommitObject(headRef.Hash())
+	c.Assert(err, IsNil)
+	c.Assert(commit.Message, Equals, "bar\n")
+	c.Assert(commit.NumParents(), Equals, 1)
+
+	stats, err := commit.Stats()
+	c.Assert(err, IsNil)
+	c.Assert(stats, HasLen, 2)
+	c.Assert(stats[0], Equals, object.FileStat{
+		Name:     "bar",
+		Addition: 1,
+	})
+	c.Assert(stats[1], Equals, object.FileStat{
+		Name:     "foo",
+		Addition: 1,
+	})
+
+	assertStorageStatus(c, s.Repository, 14, 12, 11, amendedHash)
+}
+
+func (s *WorktreeSuite) TestCommitAmendNothingToCommit(c *C) {
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{})
+	c.Assert(err, IsNil)
+
+	err = util.WriteFile(fs, "foo", []byte("foo"), 0644)
+	c.Assert(err, IsNil)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	prevHash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature()})
+	c.Assert(err, IsNil)
+
+	_, err = w.Commit("bar\n", &CommitOptions{Author: defaultSignature(), AllowEmptyCommits: true})
+	c.Assert(err, IsNil)
+
+	amendedHash, err := w.Commit("foo\n", &CommitOptions{Author: defaultSignature(), Amend: true})
+	c.Log(prevHash, amendedHash)
+	c.Assert(err, Equals, ErrEmptyCommit)
+	c.Assert(amendedHash, Equals, plumbing.ZeroHash)
+}
+
+func (s *WorktreeSuite) TestAddAndCommitWithSkipStatus(c *C) {
+	expected := plumbing.NewHash("375a3808ffde7f129cdd3c8c252fd0fe37cfd13b")
+
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{})
+	c.Assert(err, IsNil)
+
+	util.WriteFile(fs, "LICENSE", []byte("foo"), 0644)
+	util.WriteFile(fs, "foo", []byte("foo"), 0644)
+
+	err = w.AddWithOptions(&AddOptions{
+		Path:       "foo",
+		SkipStatus: true,
+	})
+	c.Assert(err, IsNil)
+
+	hash, err := w.Commit("commit foo only\n", &CommitOptions{
+		Author: defaultSignature(),
+	})
+
 	c.Assert(hash, Equals, expected)
 	c.Assert(err, IsNil)
 
 	assertStorageStatus(c, s.Repository, 13, 11, 10, expected)
+}
+
+func (s *WorktreeSuite) TestAddAndCommitWithSkipStatusPathNotModified(c *C) {
+	expected := plumbing.NewHash("375a3808ffde7f129cdd3c8c252fd0fe37cfd13b")
+	expected2 := plumbing.NewHash("8691273baf8f6ee2cccfc05e910552c04d02d472")
+
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{})
+	c.Assert(err, IsNil)
+
+	util.WriteFile(fs, "foo", []byte("foo"), 0644)
+
+	status, err := w.Status()
+	c.Assert(err, IsNil)
+	foo := status.File("foo")
+	c.Assert(foo.Staging, Equals, Untracked)
+	c.Assert(foo.Worktree, Equals, Untracked)
+
+	err = w.AddWithOptions(&AddOptions{
+		Path:       "foo",
+		SkipStatus: true,
+	})
+	c.Assert(err, IsNil)
+
+	status, err = w.Status()
+	c.Assert(err, IsNil)
+	foo = status.File("foo")
+	c.Assert(foo.Staging, Equals, Added)
+	c.Assert(foo.Worktree, Equals, Unmodified)
+
+	hash, err := w.Commit("commit foo only\n", &CommitOptions{All: true,
+		Author: defaultSignature(),
+	})
+	c.Assert(hash, Equals, expected)
+	c.Assert(err, IsNil)
+
+	commit1, err := w.r.CommitObject(hash)
+	c.Assert(err, IsNil)
+
+	status, err = w.Status()
+	c.Assert(err, IsNil)
+	foo = status.File("foo")
+	c.Assert(foo.Staging, Equals, Untracked)
+	c.Assert(foo.Worktree, Equals, Untracked)
+
+	assertStorageStatus(c, s.Repository, 13, 11, 10, expected)
+
+	err = w.AddWithOptions(&AddOptions{
+		Path:       "foo",
+		SkipStatus: true,
+	})
+	c.Assert(err, IsNil)
+
+	status, err = w.Status()
+	c.Assert(err, IsNil)
+	foo = status.File("foo")
+	c.Assert(foo.Staging, Equals, Untracked)
+	c.Assert(foo.Worktree, Equals, Untracked)
+
+	hash, err = w.Commit("commit with no changes\n", &CommitOptions{
+		Author:            defaultSignature(),
+		AllowEmptyCommits: true,
+	})
+	c.Assert(hash, Equals, expected2)
+	c.Assert(err, IsNil)
+
+	commit2, err := w.r.CommitObject(hash)
+	c.Assert(err, IsNil)
+
+	status, err = w.Status()
+	c.Assert(err, IsNil)
+	foo = status.File("foo")
+	c.Assert(foo.Staging, Equals, Untracked)
+	c.Assert(foo.Worktree, Equals, Untracked)
+
+	patch, err := commit2.Patch(commit1)
+	c.Assert(err, IsNil)
+	files := patch.FilePatches()
+	c.Assert(files, IsNil)
+
+	assertStorageStatus(c, s.Repository, 13, 11, 11, expected2)
 }
 
 func (s *WorktreeSuite) TestCommitAll(c *C) {
@@ -208,8 +515,7 @@ func (s *WorktreeSuite) TestCommitSignBadKey(c *C) {
 }
 
 func (s *WorktreeSuite) TestCommitTreeSort(c *C) {
-	fs, clean := s.TemporalFilesystem()
-	defer clean()
+	fs := s.TemporalFilesystem(c)
 
 	st := filesystem.NewStorage(fs, cache.NewObjectLRUDefault())
 	_, err := Init(st, nil)
@@ -256,8 +562,7 @@ func (s *WorktreeSuite) TestCommitTreeSort(c *C) {
 
 // https://github.com/go-git/go-git/pull/224
 func (s *WorktreeSuite) TestJustStoreObjectsNotAlreadyStored(c *C) {
-	fs, clean := s.TemporalFilesystem()
-	defer clean()
+	fs := s.TemporalFilesystem(c)
 
 	fsDotgit, err := fs.Chroot(".git") // real fs to get modified timestamps
 	c.Assert(err, IsNil)
@@ -314,6 +619,44 @@ func (s *WorktreeSuite) TestJustStoreObjectsNotAlreadyStored(c *C) {
 	c.Assert(infoLicenseSecond.ModTime(), Equals, infoLicense.ModTime()) // object of LICENSE should have the same timestamp because no additional write operation was performed
 }
 
+func (s *WorktreeSuite) TestCommitInvalidCharactersInAuthorInfos(c *C) {
+	f := fixtures.Basic().One()
+	s.Repository = s.NewRepositoryWithEmptyWorktree(f)
+
+	expected := plumbing.NewHash("e8eecef2524c3a37cf0f0996603162f81e0373f1")
+
+	fs := memfs.New()
+	storage := memory.NewStorage()
+
+	r, err := Init(storage, fs)
+	c.Assert(err, IsNil)
+
+	w, err := r.Worktree()
+	c.Assert(err, IsNil)
+
+	util.WriteFile(fs, "foo", []byte("foo"), 0644)
+
+	_, err = w.Add("foo")
+	c.Assert(err, IsNil)
+
+	hash, err := w.Commit("foo\n", &CommitOptions{Author: invalidSignature()})
+	c.Assert(hash, Equals, expected)
+	c.Assert(err, IsNil)
+
+	assertStorageStatus(c, r, 1, 1, 1, expected)
+
+	// Check HEAD commit contains author informations with '<', '>' and '\n' stripped
+	lr, err := r.Log(&LogOptions{})
+	c.Assert(err, IsNil)
+
+	commit, err := lr.Next()
+	c.Assert(err, IsNil)
+
+	c.Assert(commit.Author.Name, Equals, "foo bad")
+	c.Assert(commit.Author.Email, Equals, "badfoo@foo.foo")
+
+}
+
 func assertStorageStatus(
 	c *C, r *Repository,
 	treesCount, blobCount, commitCount int, head plumbing.Hash,
@@ -349,6 +692,15 @@ func defaultSignature() *object.Signature {
 	return &object.Signature{
 		Name:  "foo",
 		Email: "foo@foo.foo",
+		When:  when,
+	}
+}
+
+func invalidSignature() *object.Signature {
+	when, _ := time.Parse(object.DateFormat, "Thu May 04 00:03:43 2017 +0200")
+	return &object.Signature{
+		Name:  "foo <bad>\n",
+		Email: "<bad>\nfoo@foo.foo",
 		When:  when,
 	}
 }

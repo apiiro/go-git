@@ -3,8 +3,8 @@ package object
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"strings"
 	"time"
 
@@ -198,6 +198,27 @@ func (s *SuiteCommit) TestPatchContext_ToNil(c *C) {
 }
 
 func (s *SuiteCommit) TestCommitEncodeDecodeIdempotent(c *C) {
+	pgpsignature := `-----BEGIN PGP SIGNATURE-----
+
+iQEcBAABAgAGBQJTZbQlAAoJEF0+sviABDDrZbQH/09PfE51KPVPlanr6q1v4/Ut
+LQxfojUWiLQdg2ESJItkcuweYg+kc3HCyFejeDIBw9dpXt00rY26p05qrpnG+85b
+hM1/PswpPLuBSr+oCIDj5GMC2r2iEKsfv2fJbNW8iWAXVLoWZRF8B0MfqX/YTMbm
+ecorc4iXzQu7tupRihslbNkfvfciMnSDeSvzCpWAHl7h8Wj6hhqePmLm9lAYqnKp
+8S5B/1SSQuEAjRZgI4IexpZoeKGVDptPHxLLS38fozsyi0QyDyzEgJxcJQVMXxVi
+RUysgqjcpT8+iQM1PblGfHR4XAhuOqN5Fx06PSaFZhqvWFezJ28/CLyX5q+oIVk=
+=EFTF
+-----END PGP SIGNATURE-----
+`
+
+	tag := fmt.Sprintf(`object f000000000000000000000000000000000000000
+type commit
+tag change
+tagger Foo <foo@example.local> 1695827841 -0400
+
+change
+%s
+`, pgpsignature)
+
 	ts, err := time.Parse(time.RFC3339, "2006-01-02T15:04:05-07:00")
 	c.Assert(err, IsNil)
 	commits := []*Commit{
@@ -207,6 +228,7 @@ func (s *SuiteCommit) TestCommitEncodeDecodeIdempotent(c *C) {
 			Message:      "Message\n\nFoo\nBar\nWith trailing blank lines\n\n",
 			TreeHash:     plumbing.NewHash("f000000000000000000000000000000000000001"),
 			ParentHashes: []plumbing.Hash{plumbing.NewHash("f000000000000000000000000000000000000002")},
+			Encoding:     defaultUtf8CommitMessageEncoding,
 		},
 		{
 			Author:    Signature{Name: "Foo", Email: "foo@example.local", When: ts},
@@ -219,6 +241,32 @@ func (s *SuiteCommit) TestCommitEncodeDecodeIdempotent(c *C) {
 				plumbing.NewHash("f000000000000000000000000000000000000006"),
 				plumbing.NewHash("f000000000000000000000000000000000000007"),
 			},
+			Encoding: MessageEncoding("ISO-8859-1"),
+		},
+		{
+			Author:    Signature{Name: "Foo", Email: "foo@example.local", When: ts},
+			Committer: Signature{Name: "Bar", Email: "bar@example.local", When: ts},
+			Message:   "Testing mergetag\n\nHere, commit is not signed",
+			TreeHash:  plumbing.NewHash("f000000000000000000000000000000000000001"),
+			ParentHashes: []plumbing.Hash{
+				plumbing.NewHash("f000000000000000000000000000000000000002"),
+				plumbing.NewHash("f000000000000000000000000000000000000003"),
+			},
+			MergeTag: tag,
+			Encoding: defaultUtf8CommitMessageEncoding,
+		},
+		{
+			Author:    Signature{Name: "Foo", Email: "foo@example.local", When: ts},
+			Committer: Signature{Name: "Bar", Email: "bar@example.local", When: ts},
+			Message:   "Testing mergetag\n\nHere, commit is also signed",
+			TreeHash:  plumbing.NewHash("f000000000000000000000000000000000000001"),
+			ParentHashes: []plumbing.Hash{
+				plumbing.NewHash("f000000000000000000000000000000000000002"),
+				plumbing.NewHash("f000000000000000000000000000000000000003"),
+			},
+			MergeTag:     tag,
+			PGPSignature: pgpsignature,
+			Encoding:     defaultUtf8CommitMessageEncoding,
 		},
 	}
 	for _, commit := range commits {
@@ -407,7 +455,7 @@ func (s *SuiteCommit) TestStat(c *C) {
 	c.Assert(fileStats[1].Name, Equals, "php/crappy.php")
 	c.Assert(fileStats[1].Addition, Equals, 259)
 	c.Assert(fileStats[1].Deletion, Equals, 0)
-	c.Assert(fileStats[1].String(), Equals, " php/crappy.php | 259 ++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
+	c.Assert(fileStats[1].String(), Equals, " php/crappy.php | 259 +++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
 }
 
 func (s *SuiteCommit) TestVerify(c *C) {
@@ -449,7 +497,7 @@ YIefGtzXfldDxg4=
 `
 
 	e, err := commit.Verify(armoredKeyRing)
-        c.Assert(err, IsNil)
+	c.Assert(err, IsNil)
 
 	_, ok := e.Identities["go-git test key"]
 	c.Assert(ok, Equals, true)
@@ -486,13 +534,13 @@ func (s *SuiteCommit) TestMalformedHeader(c *C) {
 }
 
 func (s *SuiteCommit) TestEncodeWithoutSignature(c *C) {
-	//Similar to TestString since no signature
+	// Similar to TestString since no signature
 	encoded := &plumbing.MemoryObject{}
 	err := s.Commit.EncodeWithoutSignature(encoded)
 	c.Assert(err, IsNil)
 	er, err := encoded.Reader()
 	c.Assert(err, IsNil)
-	payload, err := ioutil.ReadAll(er)
+	payload, err := io.ReadAll(er)
 	c.Assert(err, IsNil)
 
 	c.Assert(string(payload), Equals, ""+
@@ -503,4 +551,74 @@ func (s *SuiteCommit) TestEncodeWithoutSignature(c *C) {
 		"committer Máximo Cuadros Ortiz <mcuadros@gmail.com> 1427802494 +0200\n"+
 		"\n"+
 		"Merge branch 'master' of github.com:tyba/git-fixture\n")
+}
+
+func (s *SuiteCommit) TestLess(c *C) {
+	when1 := time.Now()
+	when2 := when1.Add(time.Hour)
+
+	hash1 := plumbing.NewHash("1669dce138d9b841a518c64b10914d88f5e488ea")
+	hash2 := plumbing.NewHash("2669dce138d9b841a518c64b10914d88f5e488ea")
+
+	commitLessTests := []struct {
+		Committer1When, Committer2When time.Time
+		Author1When, Author2When       time.Time
+		Hash1, Hash2                   plumbing.Hash
+		Exp                            bool
+	}{
+		{when1, when1, when1, when1, hash1, hash2, true},
+		{when1, when1, when1, when1, hash2, hash1, false},
+		{when1, when1, when1, when2, hash1, hash2, true},
+		{when1, when1, when1, when2, hash2, hash1, true},
+		{when1, when1, when2, when1, hash1, hash2, false},
+		{when1, when1, when2, when1, hash2, hash1, false},
+		{when1, when1, when2, when2, hash1, hash2, true},
+		{when1, when1, when2, when2, hash2, hash1, false},
+		{when1, when2, when1, when1, hash1, hash2, true},
+		{when1, when2, when1, when1, hash2, hash1, true},
+		{when1, when2, when1, when2, hash1, hash2, true},
+		{when1, when2, when1, when2, hash2, hash1, true},
+		{when1, when2, when2, when1, hash1, hash2, true},
+		{when1, when2, when2, when1, hash2, hash1, true},
+		{when1, when2, when2, when2, hash1, hash2, true},
+		{when1, when2, when2, when2, hash2, hash1, true},
+		{when2, when1, when1, when1, hash1, hash2, false},
+		{when2, when1, when1, when1, hash2, hash1, false},
+		{when2, when1, when1, when2, hash1, hash2, false},
+		{when2, when1, when1, when2, hash2, hash1, false},
+		{when2, when1, when2, when1, hash1, hash2, false},
+		{when2, when1, when2, when1, hash2, hash1, false},
+		{when2, when1, when2, when2, hash1, hash2, false},
+		{when2, when1, when2, when2, hash2, hash1, false},
+		{when2, when2, when1, when1, hash1, hash2, true},
+		{when2, when2, when1, when1, hash2, hash1, false},
+		{when2, when2, when1, when2, hash1, hash2, true},
+		{when2, when2, when1, when2, hash2, hash1, true},
+		{when2, when2, when2, when1, hash1, hash2, false},
+		{when2, when2, when2, when1, hash2, hash1, false},
+		{when2, when2, when2, when2, hash1, hash2, true},
+		{when2, when2, when2, when2, hash2, hash1, false},
+	}
+
+	for _, t := range commitLessTests {
+		commit1 := &Commit{
+			Hash: t.Hash1,
+			Author: Signature{
+				When: t.Author1When,
+			},
+			Committer: Signature{
+				When: t.Committer1When,
+			},
+		}
+		commit2 := &Commit{
+			Hash: t.Hash2,
+			Author: Signature{
+				When: t.Author2When,
+			},
+			Committer: Signature{
+				When: t.Committer2When,
+			},
+		}
+		c.Assert(commit1.Less(commit2), Equals, t.Exp)
+	}
 }

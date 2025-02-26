@@ -1,7 +1,6 @@
 package file
 
 import (
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,13 +24,13 @@ func (s *CommonSuite) SetUpSuite(c *C) {
 	}
 
 	var err error
-	s.tmpDir, err = ioutil.TempDir("", "")
+	s.tmpDir, err = os.MkdirTemp(c.MkDir(), "")
 	c.Assert(err, IsNil)
 	s.ReceivePackBin = filepath.Join(s.tmpDir, "git-receive-pack")
 	s.UploadPackBin = filepath.Join(s.tmpDir, "git-upload-pack")
 	bin := filepath.Join(s.tmpDir, "go-git")
-	cmd := exec.Command("go", "build", "-o", bin,
-		"../../../cli/go-git/...")
+	cmd := exec.Command("go", "build", "-o", bin)
+	cmd.Dir = "../../../cli/go-git"
 	c.Assert(cmd.Run(), IsNil)
 	c.Assert(os.Symlink(bin, s.ReceivePackBin), IsNil)
 	c.Assert(os.Symlink(bin, s.UploadPackBin), IsNil)
@@ -39,5 +38,4 @@ func (s *CommonSuite) SetUpSuite(c *C) {
 
 func (s *CommonSuite) TearDownSuite(c *C) {
 	defer s.Suite.TearDownSuite(c)
-	c.Assert(os.RemoveAll(s.tmpDir), IsNil)
 }

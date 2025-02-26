@@ -23,6 +23,12 @@ func (s *OptionsSuite) TestCommitOptionsParentsFromHEAD(c *C) {
 	c.Assert(o.Parents, HasLen, 1)
 }
 
+func (s *OptionsSuite) TestResetOptionsCommitNotFound(c *C) {
+	o := ResetOptions{Commit: plumbing.NewHash("ab1b15c6f6487b4db16f10d8ec69bb8bf91dcabd")}
+	err := o.Validate(s.Repository)
+	c.Assert(err, NotNil)
+}
+
 func (s *OptionsSuite) TestCommitOptionsCommitter(c *C) {
 	sig := &object.Signature{}
 
@@ -91,7 +97,7 @@ func (s *OptionsSuite) TestCreateTagOptionsLoadGlobal(c *C) {
 }
 
 func (s *OptionsSuite) writeGlobalConfig(c *C, cfg *config.Config) func() {
-	fs, clean := s.TemporalFilesystem()
+	fs := s.TemporalFilesystem(c)
 
 	tmp, err := util.TempDir(fs, "", "test-options")
 	c.Assert(err, IsNil)
@@ -109,7 +115,6 @@ func (s *OptionsSuite) writeGlobalConfig(c *C, cfg *config.Config) func() {
 	c.Assert(err, IsNil)
 
 	return func() {
-		clean()
 		os.Setenv("XDG_CONFIG_HOME", "")
 
 	}
