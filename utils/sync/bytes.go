@@ -45,7 +45,17 @@ func GetBytesBuffer() *bytes.Buffer {
 	return buf
 }
 
-// PutBytesBuffer puts buf back into its sync.Pool.
+// maxPooledBytesBufferCap is the largest capacity PutBytesBuffer returns to the pool.
+// Larger buffers are left to the garbage collector: a pool retains whatever it is given,
+// so a buffer grown for one large object would otherwise stay allocated for the life of
+// the process and be handed out again for small reads.
+const maxPooledBytesBufferCap = 4 << 20
+
+// PutBytesBuffer puts buf back into its sync.Pool, unless its capacity exceeds
+// maxPooledBytesBufferCap.
 func PutBytesBuffer(buf *bytes.Buffer) {
+	if buf.Cap() > maxPooledBytesBufferCap {
+		return
+	}
 	bytesBuffer.Put(buf)
 }

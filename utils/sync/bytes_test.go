@@ -27,6 +27,16 @@ func TestGetAndPutBytesBuffer(t *testing.T) {
 	}
 }
 
+func TestPutBytesBufferDropsOversizedBuffers(t *testing.T) {
+	buf := GetBytesBuffer()
+	buf.Grow(maxPooledBytesBufferCap + 1)
+	PutBytesBuffer(buf)
+
+	if got := GetBytesBuffer().Cap(); got > maxPooledBytesBufferCap {
+		t.Errorf("pooled bytes buffer capacity: wanted at most %d got %d", maxPooledBytesBufferCap, got)
+	}
+}
+
 func TestGetAndPutByteSlice(t *testing.T) {
 	slice := GetByteSlice()
 	if slice == nil {
