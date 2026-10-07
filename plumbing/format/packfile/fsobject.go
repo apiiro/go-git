@@ -86,7 +86,7 @@ func (o *FSObject) Reader() (io.ReadCloser, error) {
 		bounded := newBoundedReadCloser(r, o.size)
 		return ioutil.NewReadCloserWithCloser(bounded, f.Close), nil
 	}
-	r, err := p.getObjectContent(o.offset)
+	r, err := p.getObjectContent(o.offset, o.hash)
 	if err != nil {
 		_ = f.Close()
 		return nil, err

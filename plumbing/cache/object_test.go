@@ -72,6 +72,15 @@ func (s *ObjectSuite) TestPutBigObject(c *C) {
 	}
 }
 
+func (s *ObjectSuite) TestPutBigObjectDoesNotHash(c *C) {
+	o := &hashCountingObject{dummyObject: dummyObject{size: 3 * Byte}}
+	s.c["two_bytes"].Put(o)
+
+	c.Assert(o.hashCalls, Equals, 0)
+	_, ok := s.c["two_bytes"].Get(o.hash)
+	c.Assert(ok, Equals, false)
+}
+
 func (s *ObjectSuite) TestPutCacheOverflow(c *C) {
 	// this test only works with an specific size
 	o := s.c["two_bytes"]
@@ -185,3 +194,13 @@ func (d *dummyObject) Size() int64                   { return int64(d.size) }
 func (d *dummyObject) SetSize(s int64)               { d.size = FileSize(s) }
 func (*dummyObject) Reader() (io.ReadCloser, error)  { return nil, nil }
 func (*dummyObject) Writer() (io.WriteCloser, error) { return nil, nil }
+
+type hashCountingObject struct {
+	dummyObject
+	hashCalls int
+}
+
+func (o *hashCountingObject) Hash() plumbing.Hash {
+	o.hashCalls++
+	return o.dummyObject.Hash()
+}

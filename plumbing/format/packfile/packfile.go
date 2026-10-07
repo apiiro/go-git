@@ -215,7 +215,7 @@ func (p *Packfile) getNextObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.
 	// If we have no filesystem, we will return a MemoryObject instead
 	// of an FSObject.
 	if p.fs == nil {
-		return p.getNextMemoryObject(h)
+		return p.getNextMemoryObject(h, hash)
 	}
 
 	// If the object is small enough then read it completely into memory now since
@@ -225,7 +225,7 @@ func (p *Packfile) getNextObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.
 	var size int64
 	if h.Length <= smallObjectThreshold {
 		if h.Type != plumbing.OFSDeltaObject && h.Type != plumbing.REFDeltaObject {
-			return p.getNextMemoryObject(h)
+			return p.getNextMemoryObject(h, hash)
 		}
 
 		// For delta objects we read the delta data and apply the small object
@@ -242,6 +242,7 @@ func (p *Packfile) getNextObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.
 		}
 		if size <= smallObjectThreshold {
 			var obj = new(plumbing.MemoryObject)
+			obj.SetHash(hash)
 			obj.SetSize(size)
 			if h.Type == plumbing.REFDeltaObject {
 				err = p.fillREFDeltaObjectContentWithDelta(obj, h.Reference, delta)
@@ -277,7 +278,7 @@ func (p *Packfile) getNextObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.
 	), nil
 }
 
-func (p *Packfile) getObjectContent(offset int64) (io.ReadCloser, error) {
+func (p *Packfile) getObjectContent(offset int64, hash plumbing.Hash) (io.ReadCloser, error) {
 	h, err := p.objectHeaderAtOffset(offset)
 	if err != nil {
 		return nil, err
@@ -285,7 +286,7 @@ func (p *Packfile) getObjectContent(offset int64) (io.ReadCloser, error) {
 
 	// getObjectContent is called from FSObject, so we have to explicitly
 	// get memory object here to avoid recursive cycle
-	obj, err := p.getNextMemoryObject(h)
+	obj, err := p.getNextMemoryObject(h, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -336,8 +337,12 @@ func (p *Packfile) getReaderDirect(h *ObjectHeader) (io.ReadCloser, error) {
 	}
 }
 
-func (p *Packfile) getNextMemoryObject(h *ObjectHeader) (plumbing.EncodedObject, error) {
+// getNextMemoryObject reads the object at h into memory. hash is the object's hash from the
+// index, or ZeroHash when unknown; setting it spares the delta base cache from hashing the
+// whole content to key it, which dominates the cost of resolving long chains of large objects.
+func (p *Packfile) getNextMemoryObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.EncodedObject, error) {
 	var obj = new(plumbing.MemoryObject)
+	obj.SetHash(hash)
 	obj.SetSize(h.Length)
 	obj.SetType(h.Type)
 
