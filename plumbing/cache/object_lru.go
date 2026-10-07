@@ -43,6 +43,11 @@ func (c *ObjectLRU) Put(obj plumbing.EncodedObject) {
 	}
 
 	objSize := FileSize(obj.Size())
+	// Checked before obj.Hash(), which may compute the hash over the whole content.
+	if objSize > c.MaxSize {
+		return
+	}
+
 	key := obj.Hash()
 	if ee, ok := c.cache[key]; ok {
 		oldObj := ee.Value.(plumbing.EncodedObject)
@@ -51,9 +56,6 @@ func (c *ObjectLRU) Put(obj plumbing.EncodedObject) {
 		c.ll.MoveToFront(ee)
 		ee.Value = obj
 	} else {
-		if objSize > c.MaxSize {
-			return
-		}
 		ee := c.ll.PushFront(obj)
 		c.cache[key] = ee
 	}

@@ -25,6 +25,10 @@ func (o *MemoryObject) Hash() Hash {
 	return o.h
 }
 
+// SetHash sets the object Hash, for callers that already know it, so Hash does not have to
+// compute it from the content.
+func (o *MemoryObject) SetHash(h Hash) { o.h = h }
+
 // Type returns the ObjectType
 func (o *MemoryObject) Type() ObjectType { return o.t }
 

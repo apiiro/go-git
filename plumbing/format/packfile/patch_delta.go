@@ -76,7 +76,9 @@ func ApplyDelta(target, base plumbing.EncodedObject, delta []byte) (err error) {
 
 	buf := sync.GetBytesBuffer()
 	defer sync.PutBytesBuffer(buf)
-	_, err = buf.ReadFrom(r)
+	// io.Copy rather than buf.ReadFrom: when the base is in memory its reader writes itself
+	// in one call, so buf is allocated once at the right size instead of grown by doubling.
+	_, err = io.Copy(buf, r)
 	if err != nil {
 		return err
 	}
@@ -263,7 +265,10 @@ func patchDelta(dst *bytes.Buffer, src, delta []byte) error {
 	}
 	remainingTargetSz := targetSz
 
-	growSz := min(targetSz, maxPatchPreemptionSize)
+	// A delta's target is usually about the size of its source. Growing to that bound up front
+	// saves repeated doubling on large objects, and is safe because both inputs are already in
+	// memory, unlike targetSz, which a corrupt delta controls.
+	growSz := min(targetSz, max(maxPatchPreemptionSize, uint(len(src)+len(delta))))
 	dst.Grow(int(growSz))
 
 	for remainingTargetSz > 0 {

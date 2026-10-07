@@ -24,6 +24,18 @@ func (s *MemoryObjectSuite) TestHash(c *C) {
 	c.Assert(o.Hash().String(), Equals, "8ab686eafeb1f44702738c8b0f24f2567c36da6d")
 }
 
+func (s *MemoryObjectSuite) TestSetHash(c *C) {
+	o := &MemoryObject{}
+	o.SetType(BlobObject)
+	o.SetSize(14)
+	o.SetHash(NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+
+	_, err := o.Write([]byte("Hello, World!\n"))
+	c.Assert(err, IsNil)
+
+	c.Assert(o.Hash().String(), Equals, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+}
+
 func (s *MemoryObjectSuite) TestHashNotFilled(c *C) {
 	o := &MemoryObject{}
 	o.SetType(BlobObject)
