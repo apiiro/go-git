@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -27,13 +28,12 @@ func TestGetAndPutBytesBuffer(t *testing.T) {
 	}
 }
 
-func TestPutBytesBufferDropsOversizedBuffers(t *testing.T) {
-	buf := GetBytesBuffer()
-	buf.Grow(maxPooledBytesBufferCap + 1)
-	PutBytesBuffer(buf)
-
-	if got := GetBytesBuffer().Cap(); got > maxPooledBytesBufferCap {
-		t.Errorf("pooled bytes buffer capacity: wanted at most %d got %d", maxPooledBytesBufferCap, got)
+func TestPoolableBytesBufferCapacity(t *testing.T) {
+	if !poolable(bytes.NewBuffer(make([]byte, 0, maxPooledBytesBufferCap))) {
+		t.Errorf("a buffer of capacity %d must be pooled", maxPooledBytesBufferCap)
+	}
+	if poolable(bytes.NewBuffer(make([]byte, 0, maxPooledBytesBufferCap+1))) {
+		t.Errorf("a buffer of capacity %d must not be pooled", maxPooledBytesBufferCap+1)
 	}
 }
 

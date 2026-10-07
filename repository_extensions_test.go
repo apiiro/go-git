@@ -58,6 +58,20 @@ func TestVerifyExtensions(t *testing.T) {
 			},
 		},
 		{
+			name: "repositoryformatversion=0: allows partialClone",
+			setup: func(t *testing.T, cfg *config.Config) {
+				cfg.Core.RepositoryFormatVersion = formatcfg.Version_0
+				cfg.Raw.Section("extensions").SetOption("partialClone", "origin")
+			},
+		},
+		{
+			name: "repositoryformatversion=1: allows partialClone",
+			setup: func(t *testing.T, cfg *config.Config) {
+				cfg.Core.RepositoryFormatVersion = formatcfg.Version_1
+				cfg.Raw.Section("extensions").SetOption("partialClone", "origin")
+			},
+		},
+		{
 			name: "repositoryformatversion=1: rejects objectformat=sha1", // not supported in go-git/v5
 			setup: func(t *testing.T, cfg *config.Config) {
 				cfg.Core.RepositoryFormatVersion = formatcfg.Version_1

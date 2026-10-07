@@ -54,8 +54,12 @@ const maxPooledBytesBufferCap = 4 << 20
 // PutBytesBuffer puts buf back into its sync.Pool, unless its capacity exceeds
 // maxPooledBytesBufferCap.
 func PutBytesBuffer(buf *bytes.Buffer) {
-	if buf.Cap() > maxPooledBytesBufferCap {
+	if !poolable(buf) {
 		return
 	}
 	bytesBuffer.Put(buf)
+}
+
+func poolable(buf *bytes.Buffer) bool {
+	return buf.Cap() <= maxPooledBytesBufferCap
 }

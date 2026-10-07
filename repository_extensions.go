@@ -40,16 +40,23 @@ var (
 		// noop-v1 does not change git’s behavior at all.
 		// It is useful only for testing format-1 compatibility.
 		"noop-v1": {},
+
+		// partialclone marks a clone made with --filter, whose filtered-out
+		// objects are absent until a promisor remote fetches them. go-git
+		// does not fetch them; reading one returns plumbing.ErrObjectNotFound,
+		// which callers tolerating missing blobs already handle.
+		"partialclone": {},
 	}
 
 	// Some Git extensions were supported upstream before the introduction
 	// of repositoryformatversion. These are the only extensions that can be
 	// enabled while core.repositoryformatversion is unset or set to 0.
+	// Keys are lower case: extensions() lower-cases the names it reads.
 	extensionsValidForV0 = map[string]struct{}{
 		"noop":            {},
-		"partialClone":    {},
-		"preciousObjects": {},
-		"worktreeConfig":  {},
+		"partialclone":    {},
+		"preciousobjects": {},
+		"worktreeconfig":  {},
 	}
 )
 
