@@ -2,7 +2,10 @@ package dotgit
 
 import (
 	"bufio"
+	"bytes"
+	"compress/zlib"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,12 +15,14 @@ import (
 	"testing"
 
 	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-billy/v5/util"
 	fixtures "github.com/go-git/go-git-fixtures/v4"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/storage"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	. "gopkg.in/check.v1"
 )
 
@@ -42,6 +47,169 @@ func (s *SuiteDotGit) TemporalFilesystem(c *C) (fs billy.Filesystem) {
 	}
 
 	return fs
+}
+
+func (s *SuiteDotGit) TestModuleRejectsEscapingNames(c *C) {
+	d := New(memfs.New())
+	// Only true path-traversal cases — names like "/etc" or
+	// "modules/../escape" land inside modules/ once Join cleans
+	// them, so the containment check correctly accepts those.
+	bad := []string{
+		"..",
+		"../x",
+		"foo/../..",
+		"a/b/c/../../../..",
+	}
+	for _, n := range bad {
+		_, err := d.Module(n)
+		c.Assert(errors.Is(err, ErrModuleNameEscape), Equals, true,
+			Commentf("name %q", n))
+	}
+}
+
+func (s *SuiteDotGit) TestModuleAcceptsBenignNames(c *C) {
+	d := New(memfs.New())
+	for _, n := range []string{"foo", "lib/foo", "x.y"} {
+		_, err := d.Module(n)
+		c.Assert(err, IsNil, Commentf("name %q", n))
+	}
+}
+
+func (s *SuiteDotGit) TestReferenceNameRejectsEscapingNames(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+
+	// A ".." component (or a control character) lets a reference name climb
+	// out of its sub-tree into unrelated .git metadata such as config; a
+	// malicious remote can advertise such a name and, after refspec mapping,
+	// have it reach the storage layer.
+	bad := []plumbing.ReferenceName{
+		"refs/heads/../../config",
+		"refs/remotes/origin/../../../config",
+		"refs/heads/..",
+		"refs/heads/foo\x00bar",
+	}
+	for _, n := range bad {
+		ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+		c.Assert(errors.Is(d.SetRef(ref, nil), ErrReferenceNameEscape), Equals, true, Commentf("SetRef %q", n))
+
+		_, err := d.Ref(n)
+		c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true, Commentf("Ref %q", n))
+
+		c.Assert(errors.Is(d.RemoveRef(n), ErrReferenceNameEscape), Equals, true, Commentf("RemoveRef %q", n))
+	}
+
+	// The rejected traversals must not have written .git/config.
+	_, err := d.fs.Stat(configPath)
+	c.Assert(err, NotNil, Commentf("traversal must not create .git/config"))
+}
+
+func (s *SuiteDotGit) TestReferenceNameRejectsWindowsDisguisedTraversal(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+
+	// On NTFS, ".." followed by trailing periods/spaces or an Alternate Data
+	// Stream / $INDEX_ALLOCATION suffix is canonicalised back to "..", so a
+	// literal `== ".."` check would miss these while the filesystem still
+	// performs the parent-directory hop. These are pure-string checks, so the
+	// containment must hold on every host, not only Windows.
+	bad := []plumbing.ReferenceName{
+		"refs/heads/..::$INDEX_ALLOCATION",
+		"refs/heads/..:$DATA",
+		"refs/heads/.. /config",
+		"refs/heads/.../config",
+	}
+	for _, n := range bad {
+		ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+		c.Assert(errors.Is(d.SetRef(ref, nil), ErrReferenceNameEscape), Equals, true, Commentf("SetRef %q", n))
+
+		_, err := d.Ref(n)
+		c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true, Commentf("Ref %q", n))
+	}
+
+	_, err := d.fs.Stat(configPath)
+	c.Assert(err, NotNil, Commentf("traversal must not create .git/config"))
+}
+
+func (s *SuiteDotGit) TestReferenceNameRejectsHFSDisguisedTraversal(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+
+	// HFS+ strips a set of ignorable Unicode code points during
+	// normalisation, so ".<U+200C>." (zero-width non-joiner) collapses to
+	// ".." on disk. As above, this is a string-level check that must hold
+	// regardless of host OS.
+	n := plumbing.ReferenceName("refs/heads/." + "\u200c" + "./config")
+	ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+	c.Assert(errors.Is(d.SetRef(ref, nil), ErrReferenceNameEscape), Equals, true, Commentf("SetRef %q", n))
+
+	_, err := d.Ref(n)
+	c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true, Commentf("Ref %q", n))
+
+	_, err = d.fs.Stat(configPath)
+	c.Assert(err, NotNil, Commentf("traversal must not create .git/config"))
+}
+
+func (s *SuiteDotGit) TestReferenceNameRejectsAbsoluteAndDriveNames(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+
+	// A leading or trailing separator, or a drive-letter prefix, lets the
+	// name collapse onto a top-level .git file (e.g. "/config" -> .git/config)
+	// once joined. filepath.VolumeName alone would not catch "C:config" off
+	// Windows, so these are rejected host-independently as validSubmoduleName
+	// does.
+	bad := []plumbing.ReferenceName{
+		"/config",
+		"\\config",
+		"C:config",
+		"refs/heads/foo/",
+		"",
+	}
+	for _, n := range bad {
+		ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+		c.Assert(errors.Is(d.SetRef(ref, nil), ErrReferenceNameEscape), Equals, true, Commentf("SetRef %q", n))
+
+		_, err := d.Ref(n)
+		c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true, Commentf("Ref %q", n))
+		c.Assert(errors.Is(d.RemoveRef(n), ErrReferenceNameEscape), Equals, true, Commentf("RemoveRef %q", n))
+	}
+
+	_, err := d.fs.Stat(configPath)
+	c.Assert(err, NotNil, Commentf("must not create .git/config"))
+}
+
+func (s *SuiteDotGit) TestReferenceNameRejectsTopLevelMetadata(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+
+	// A single-level name that is neither under refs/ nor a [A-Z_] pseudo-ref
+	// would land on top-level .git metadata once joined; the IsSafe gate
+	// rejects it, matching upstream refname_is_safe.
+	bad := []plumbing.ReferenceName{
+		"config", "config.worktree", "index", "packed-refs",
+		"shallow", "hooks", "objects", "bar", "HEAD2", "head",
+	}
+	for _, n := range bad {
+		ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+		c.Assert(errors.Is(d.SetRef(ref, nil), ErrReferenceNameEscape), Equals, true, Commentf("SetRef %q", n))
+	}
+
+	_, err := d.fs.Stat(configPath)
+	c.Assert(err, NotNil, Commentf("must not create .git/config"))
+}
+
+func (s *SuiteDotGit) TestReferenceNameAcceptsBenignNames(c *C) {
+	d := New(memfs.New())
+	c.Assert(d.Initialize(), IsNil)
+	for _, n := range []plumbing.ReferenceName{
+		"HEAD", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+		"refs/heads/main", "refs/heads/release-1.2",
+		"refs/tags/v1.0.0", "refs/remotes/origin/HEAD", "refs/stash",
+	} {
+		ref := plumbing.NewHashReference(n, plumbing.NewHash("e8d3ffab552895c19b9fcf7aa264d277cde33881"))
+		c.Assert(d.SetRef(ref, nil), IsNil, Commentf("SetRef %q", n))
+	}
 }
 
 func (s *SuiteDotGit) TestInitialize(c *C) {
@@ -106,11 +274,14 @@ func testSetRefs(c *C, dir *DotGit) {
 
 	c.Assert(err, IsNil)
 
+	// A single-level, non-pseudo-ref name is refused: it is not under refs/
+	// and its spelling is not the [A-Z_] pseudo-ref form (upstream
+	// refname_is_safe rejects it likewise).
 	err = dir.SetRef(plumbing.NewReferenceFromStrings(
 		"bar",
 		"e8d3ffab552895c19b9fcf7aa264d277cde33881",
 	), nil)
-	c.Assert(err, IsNil)
+	c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true)
 
 	err = dir.SetRef(plumbing.NewReferenceFromStrings(
 		"refs/heads/feature/baz",
@@ -149,10 +320,9 @@ func testSetRefs(c *C, dir *DotGit) {
 	c.Assert(ref, NotNil)
 	c.Assert(ref.Target().String(), Equals, "refs/heads/foo")
 
-	ref, err = dir.Ref("bar")
-	c.Assert(err, IsNil)
-	c.Assert(ref, NotNil)
-	c.Assert(ref.Hash().String(), Equals, "e8d3ffab552895c19b9fcf7aa264d277cde33881")
+	// "bar" was refused at write time and is refused at read time too.
+	_, err = dir.Ref("bar")
+	c.Assert(errors.Is(err, ErrReferenceNameEscape), Equals, true)
 
 	// Check that SetRef with a non-nil `old` works.
 	err = dir.SetRef(plumbing.NewReferenceFromStrings(
@@ -564,6 +734,16 @@ func (s *SuiteDotGit) TestObjectPackNotFound(c *C) {
 	c.Assert(idx, IsNil)
 }
 
+func looseObjectSize(t require.TestingT, content string) int64 {
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	_, err := w.Write([]byte(content))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	return int64(buf.Len())
+}
+
 func (s *SuiteDotGit) TestNewObject(c *C) {
 	fs := s.TemporalFilesystem(c)
 
@@ -584,7 +764,7 @@ func (s *SuiteDotGit) TestNewObject(c *C) {
 
 	i, err := fs.Stat("objects/a8/a940627d132695a9769df883f85992f0ff4a43")
 	c.Assert(err, IsNil)
-	c.Assert(i.Size(), Equals, int64(34))
+	c.Assert(i.Size(), Equals, looseObjectSize(c, "blob 14\x00this is a test"))
 }
 
 func (s *SuiteDotGit) TestObjects(c *C) {
@@ -1093,4 +1273,62 @@ func (s *SuiteDotGit) TestSetPackedRef(c *C) {
 	looseCount, err = dir.CountLooseRefs()
 	c.Assert(err, IsNil)
 	c.Assert(looseCount, Equals, 1)
+}
+
+func TestIssue55(t *testing.T) {
+	t.Parallel()
+
+	writeObject := func(fs billy.Filesystem) {
+		t.Helper()
+
+		dir := New(fs)
+		err := dir.Initialize()
+		require.NoError(t, err)
+
+		w, err := dir.NewObject()
+		require.NoError(t, err)
+
+		err = w.WriteHeader(plumbing.BlobObject, 14)
+		require.NoError(t, err)
+		n, err := w.Write([]byte("this is a test"))
+		require.NoError(t, err)
+		assert.Equal(t, 14, n)
+
+		assert.Equal(t, "a8a940627d132695a9769df883f85992f0ff4a43", w.Hash().String())
+
+		err = w.Close()
+		require.NoError(t, err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		fs   billy.Filesystem
+	}{
+		{"BoundOS", osfs.New(t.TempDir(), osfs.WithBoundOS())},
+		{"ChrootOS", osfs.New(t.TempDir(), osfs.WithChrootOS())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join("objects", "a8", "a940627d132695a9769df883f85992f0ff4a43")
+
+			writeObject(tc.fs)
+			i, err := tc.fs.Stat(path)
+			require.NoError(t, err)
+			assert.Equal(t, looseObjectSize(t, "blob 14\x00this is a test"), i.Size())
+
+			ro, err := isReadOnly(tc.fs, path)
+			require.NoError(t, err)
+			assert.True(t, ro, "file %q is not read-only", path)
+
+			// Recreate the same object.
+			writeObject(tc.fs)
+			i, err = tc.fs.Stat(path)
+			require.NoError(t, err)
+			assert.Equal(t, looseObjectSize(t, "blob 14\x00this is a test"), i.Size())
+
+			ro, err = isReadOnly(tc.fs, path)
+			require.NoError(t, err)
+			assert.True(t, ro, "file %q is not read-only", path)
+		})
+	}
 }

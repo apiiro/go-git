@@ -24,6 +24,7 @@ import (
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/memfs"
@@ -475,6 +476,60 @@ func (s *WorktreeSuite) TestCheckoutSymlink(c *C) {
 	c.Assert(err, IsNil)
 }
 
+func TestCheckoutSymlinkArbitraryTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("git doesn't support symlinks by default in windows")
+	}
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "rel", target: "target"},
+		{name: "absolute", target: "/etc/passwd"},
+		{name: "dot-dot relative", target: "../../outside"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			wtFS := osfs.New(dir, osfs.WithBoundOS())
+
+			dotFS, err := wtFS.Chroot(".git")
+			require.NoError(t, err)
+			storage := filesystem.NewStorage(dotFS, cache.NewObjectLRUDefault())
+
+			r, err := Init(storage, wtFS)
+			require.NoError(t, err)
+
+			w, err := r.Worktree()
+			require.NoError(t, err)
+
+			require.NoError(t, w.Filesystem.Symlink(tc.target, "link"))
+			_, err = w.Add("link")
+			require.NoError(t, err)
+			_, err = w.Commit("add symlink", &CommitOptions{Author: defaultSignature()})
+			require.NoError(t, err)
+
+			require.NoError(t, r.Storer.SetIndex(&index.Index{Version: 2}))
+			w.Filesystem = newWorktreeFilesystem(
+				osfs.New(filepath.Join(dir, "worktree-empty")), true, true)
+
+			require.NoError(t, w.Checkout(&CheckoutOptions{}))
+
+			_, err = w.Status()
+			require.NoError(t, err)
+
+			got, err := w.Filesystem.Readlink("link")
+			require.NoError(t, err)
+			assert.Equal(t, tc.target, got)
+		})
+	}
+}
+
 func (s *WorktreeSuite) TestCheckoutSparse(c *C) {
 	fs := memfs.New()
 	r, err := Clone(memory.NewStorage(), fs, &CloneOptions{
@@ -749,6 +804,39 @@ func (s *WorktreeSuite) TestCheckoutBranch(c *C) {
 
 	status, err := w.Status()
 	c.Assert(err, IsNil)
+	c.Assert(status.IsClean(), Equals, true)
+}
+
+func (s *WorktreeSuite) TestCheckoutBranchUntracked(c *C) {
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: memfs.New(),
+	}
+
+	uf, err := w.Filesystem.Create("untracked_file")
+	c.Assert(err, IsNil)
+	_, err = uf.Write([]byte("don't delete me"))
+	c.Assert(err, IsNil)
+
+	err = w.Checkout(&CheckoutOptions{
+		Branch: "refs/heads/branch",
+	})
+	c.Assert(err, IsNil)
+
+	head, err := w.r.Head()
+	c.Assert(err, IsNil)
+	c.Assert(head.Name().String(), Equals, "refs/heads/branch")
+
+	status, err := w.Status()
+	c.Assert(err, IsNil)
+	// The untracked file should still be there, so it's not clean
+	c.Assert(status.IsClean(), Equals, false)
+	c.Assert(status.IsUntracked("untracked_file"), Equals, true)
+	err = w.Filesystem.Remove("untracked_file")
+	c.Assert(err, IsNil)
+	status, err = w.Status()
+	c.Assert(err, IsNil)
+	// After deleting the untracked file it should now be clean
 	c.Assert(status.IsClean(), Equals, true)
 }
 
@@ -1126,7 +1214,16 @@ func (s *WorktreeSuite) TestResetWithUntracked(c *C) {
 
 	status, err := w.Status()
 	c.Assert(err, IsNil)
-	c.Assert(status.IsClean(), Equals, true)
+	for file, st := range status {
+		if file == "foo" {
+			c.Assert(st.Worktree, Equals, Untracked)
+			c.Assert(st.Staging, Equals, Untracked)
+			continue
+		}
+		if st.Worktree != Unmodified || st.Staging != Unmodified {
+			c.Errorf("file %s not unmodified", file)
+		}
+	}
 }
 
 func (s *WorktreeSuite) TestResetSoft(c *C) {
@@ -1359,7 +1456,24 @@ func (s *WorktreeSuite) TestStatusAfterCheckout(c *C) {
 	status, err := w.Status()
 	c.Assert(err, IsNil)
 	c.Assert(status.IsClean(), Equals, true)
+}
 
+func (s *WorktreeSuite) TestStatusAfterSparseCheckout(c *C) {
+	fs := memfs.New()
+	w := &Worktree{
+		r:          s.Repository,
+		Filesystem: fs,
+	}
+
+	err := w.Checkout(&CheckoutOptions{
+		SparseCheckoutDirectories: []string{"php"},
+		Force:                     true,
+	})
+	c.Assert(err, IsNil)
+
+	status, err := w.Status()
+	c.Assert(err, IsNil)
+	c.Assert(status.IsClean(), Equals, true)
 }
 
 func (s *WorktreeSuite) TestStatusModified(c *C) {
@@ -2064,7 +2178,6 @@ func (s *WorktreeSuite) TestAddFilenameStartingWithDot(c *C) {
 	file = status.File("foo/bar/baz")
 	c.Assert(file.Staging, Equals, Added)
 	c.Assert(file.Worktree, Equals, Unmodified)
-
 }
 
 func (s *WorktreeSuite) TestAddGlobErrorNoMatches(c *C) {
@@ -2432,7 +2545,6 @@ func (s *WorktreeSuite) TestMove(c *C) {
 	c.Assert(status, HasLen, 2)
 	c.Assert(status.File("LICENSE").Staging, Equals, Deleted)
 	c.Assert(status.File("foo").Staging, Equals, Added)
-
 }
 
 func (s *WorktreeSuite) TestMoveNotExistentEntry(c *C) {
@@ -3102,11 +3214,11 @@ func TestValidPath(t *testing.T) {
 		{".gitmodules", false},
 		{".gitignore", false},
 		{"a..b", false},
-		{".", false},
+		{".", true},
+		{"a/.git/b", true},
+		{"a\\.git\\b", true},
 		{"a/.git", false},
 		{"a\\.git", false},
-		{"a/.git/b", false},
-		{"a\\.git\\b", false},
 	}
 
 	if runtime.GOOS == "windows" {
@@ -3121,9 +3233,10 @@ func TestValidPath(t *testing.T) {
 		}...)
 	}
 
+	fs := newWorktreeFilesystem(nil, defaultProtectNTFS(), defaultProtectHFS())
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
-			err := validPath(tc.path)
+			err := fs.validPath(tc.path)
 			if tc.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -3133,29 +3246,27 @@ func TestValidPath(t *testing.T) {
 	}
 }
 
-func TestWindowsValidPath(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{".git", false},
-		{".git . . .", false},
-		{".git ", false},
-		{".git  ", false},
-		{".git . .", false},
-		{".git . .", false},
-		{".git::$INDEX_ALLOCATION", false},
-		{".git:", false},
-		{"a", true},
-		{"a\\b", true},
-		{"a/b", true},
-		{".gitm", true},
-	}
+// TestWorktreeFilesystemMkdirAllRootIsNoop locks in the contract that
+// MkdirAll on a root-equivalent path is a silent no-op against the
+// wrapper. validPath itself still rejects "", ".", and "/" (see
+// TestValidPath), but MkdirAll specifically tolerates them because
+// "ensure the root exists" is always trivially satisfied.
+func TestWorktreeFilesystemMkdirAllRootIsNoop(t *testing.T) {
+	t.Parallel()
 
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			got := windowsValidPath(tc.path)
-			assert.Equal(t, tc.want, got)
+	rootPaths := []string{"", ".", "/"}
+	for _, p := range rootPaths {
+		t.Run(p, func(t *testing.T) {
+			t.Parallel()
+
+			mfs := memfs.New()
+			fs := newWorktreeFilesystem(mfs, true, true)
+
+			require.NoError(t, fs.MkdirAll(p, 0o755))
+
+			entries, err := mfs.ReadDir("/")
+			require.NoError(t, err)
+			assert.Empty(t, entries, "MkdirAll(%q) must not materialise a directory entry", p)
 		})
 	}
 }
@@ -3331,7 +3442,6 @@ func (s *WorktreeSuite) TestRestoreBoth(c *C) {
 }
 
 func TestFilePermissions(t *testing.T) {
-
 	// Initialize an in memory repository
 	remoteUrl := t.TempDir()
 
@@ -3388,5 +3498,4 @@ func TestFilePermissions(t *testing.T) {
 		assert.Equal(t, expectedEntry.Name, idx.Entries[i].Name)
 		assert.Equal(t, expectedEntry.Mode, idx.Entries[i].Mode)
 	}
-
 }

@@ -126,11 +126,16 @@ func (p *Packfile) nextObjectHeader() (*ObjectHeader, error) {
 	return h, err
 }
 
-func (p *Packfile) getDeltaObjectSize(buf *bytes.Buffer) int64 {
-	delta := buf.Bytes()
-	_, delta = decodeLEB128(delta) // skip src size
-	sz, _ := decodeLEB128(delta)
-	return int64(sz)
+func (p *Packfile) getDeltaObjectSize(delta []byte) (int64, error) {
+	_, delta, err := decodeLEB128(delta) // skip src size
+	if err != nil {
+		return 0, err
+	}
+	sz, _, err := decodeLEB128(delta)
+	if err != nil {
+		return 0, err
+	}
+	return int64(sz), nil
 }
 
 func (p *Packfile) getObjectSize(h *ObjectHeader) (int64, error) {
@@ -145,7 +150,7 @@ func (p *Packfile) getObjectSize(h *ObjectHeader) (int64, error) {
 			return 0, err
 		}
 
-		return p.getDeltaObjectSize(buf), nil
+		return p.getDeltaObjectSize(buf.Bytes())
 	default:
 		return 0, ErrInvalidObject.AddDetails("type %q", h.Type)
 	}
@@ -226,21 +231,22 @@ func (p *Packfile) getNextObject(h *ObjectHeader, hash plumbing.Hash) (plumbing.
 		// For delta objects we read the delta data and apply the small object
 		// optimization only if the expanded version of the object still meets
 		// the small object threshold condition.
-		buf := sync.GetBytesBuffer()
-		defer sync.PutBytesBuffer(buf)
-
-		if _, _, err := p.s.NextObject(buf); err != nil {
+		delta, err := p.readDelta()
+		if err != nil {
 			return nil, err
 		}
 
-		size = p.getDeltaObjectSize(buf)
+		size, err = p.getDeltaObjectSize(delta)
+		if err != nil {
+			return nil, err
+		}
 		if size <= smallObjectThreshold {
 			var obj = new(plumbing.MemoryObject)
 			obj.SetSize(size)
 			if h.Type == plumbing.REFDeltaObject {
-				err = p.fillREFDeltaObjectContentWithBuffer(obj, h.Reference, buf)
+				err = p.fillREFDeltaObjectContentWithDelta(obj, h.Reference, delta)
 			} else {
-				err = p.fillOFSDeltaObjectContentWithBuffer(obj, h.OffsetReference, buf)
+				err = p.fillOFSDeltaObjectContentWithDelta(obj, h.OffsetReference, delta)
 			}
 			return obj, err
 		}
@@ -370,16 +376,28 @@ func (p *Packfile) fillRegularObjectContent(obj plumbing.EncodedObject) (err err
 	return err
 }
 
-func (p *Packfile) fillREFDeltaObjectContent(obj plumbing.EncodedObject, ref plumbing.Hash) error {
+// readDelta reads the pending delta object's data into a new slice rather than a pooled
+// buffer. Applying a delta first resolves its base, which recurses down the delta chain;
+// a pooled buffer held across that recursion pins one buffer per chain level, and pooled
+// buffers grow to the largest object the process has resolved.
+func (p *Packfile) readDelta() ([]byte, error) {
 	buf := sync.GetBytesBuffer()
 	defer sync.PutBytesBuffer(buf)
 
-	_, _, err := p.s.NextObject(buf)
+	if _, _, err := p.s.NextObject(buf); err != nil {
+		return nil, err
+	}
+
+	return bytes.Clone(buf.Bytes()), nil
+}
+
+func (p *Packfile) fillREFDeltaObjectContent(obj plumbing.EncodedObject, ref plumbing.Hash) error {
+	delta, err := p.readDelta()
 	if err != nil {
 		return err
 	}
 
-	return p.fillREFDeltaObjectContentWithBuffer(obj, ref, buf)
+	return p.fillREFDeltaObjectContentWithDelta(obj, ref, delta)
 }
 
 func (p *Packfile) readREFDeltaObjectContent(h *ObjectHeader, deltaRC io.Reader) (io.ReadCloser, error) {
@@ -396,7 +414,7 @@ func (p *Packfile) readREFDeltaObjectContent(h *ObjectHeader, deltaRC io.Reader)
 	return ReaderFromDelta(base, deltaRC)
 }
 
-func (p *Packfile) fillREFDeltaObjectContentWithBuffer(obj plumbing.EncodedObject, ref plumbing.Hash, buf *bytes.Buffer) error {
+func (p *Packfile) fillREFDeltaObjectContentWithDelta(obj plumbing.EncodedObject, ref plumbing.Hash, delta []byte) error {
 	var err error
 
 	base, ok := p.cacheGet(ref)
@@ -408,22 +426,19 @@ func (p *Packfile) fillREFDeltaObjectContentWithBuffer(obj plumbing.EncodedObjec
 	}
 
 	obj.SetType(base.Type())
-	err = ApplyDelta(obj, base, buf.Bytes())
+	err = ApplyDelta(obj, base, delta)
 	p.cachePut(obj)
 
 	return err
 }
 
 func (p *Packfile) fillOFSDeltaObjectContent(obj plumbing.EncodedObject, offset int64) error {
-	buf := sync.GetBytesBuffer()
-	defer sync.PutBytesBuffer(buf)
-
-	_, _, err := p.s.NextObject(buf)
+	delta, err := p.readDelta()
 	if err != nil {
 		return err
 	}
 
-	return p.fillOFSDeltaObjectContentWithBuffer(obj, offset, buf)
+	return p.fillOFSDeltaObjectContentWithDelta(obj, offset, delta)
 }
 
 func (p *Packfile) readOFSDeltaObjectContent(h *ObjectHeader, deltaRC io.Reader) (io.ReadCloser, error) {
@@ -440,7 +455,7 @@ func (p *Packfile) readOFSDeltaObjectContent(h *ObjectHeader, deltaRC io.Reader)
 	return ReaderFromDelta(base, deltaRC)
 }
 
-func (p *Packfile) fillOFSDeltaObjectContentWithBuffer(obj plumbing.EncodedObject, offset int64, buf *bytes.Buffer) error {
+func (p *Packfile) fillOFSDeltaObjectContentWithDelta(obj plumbing.EncodedObject, offset int64, delta []byte) error {
 	hash, err := p.FindHash(offset)
 	if err != nil {
 		return err
@@ -452,7 +467,7 @@ func (p *Packfile) fillOFSDeltaObjectContentWithBuffer(obj plumbing.EncodedObjec
 	}
 
 	obj.SetType(base.Type())
-	err = ApplyDelta(obj, base, buf.Bytes())
+	err = ApplyDelta(obj, base, delta)
 	p.cachePut(obj)
 
 	return err

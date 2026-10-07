@@ -1,6 +1,9 @@
 package packfile_test
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/binary"
 	"io"
 	"os"
 	"testing"
@@ -14,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/stretchr/testify/require"
 	. "gopkg.in/check.v1"
 )
 
@@ -81,6 +85,86 @@ func (s *ParserSuite) TestParserHashes(c *C) {
 	c.Assert(obs.objects, DeepEquals, objs)
 }
 
+// Not marked as parallel: fixtures.Basic().One().Packfile() extracts the
+// fixture packfile through a shared, unsynchronized package-level cache in
+// go-git-fixtures, so running this concurrently with other fixture-backed
+// tests can trigger a fatal "concurrent map writes" crash.
+func TestChecksumMismatch(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "temp.pack")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	_, err = io.Copy(f, fixtures.Basic().One().Packfile())
+	require.NoError(t, err)
+
+	_, err = f.Seek(-1, io.SeekEnd)
+	require.NoError(t, err)
+
+	_, err = f.Write([]byte{0})
+	require.NoError(t, err)
+
+	_, err = f.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	scanner := packfile.NewScanner(f)
+	parser, err := packfile.NewParser(scanner)
+	require.NoError(t, err)
+
+	_, err = parser.Parse()
+	require.ErrorContains(t, err, "checksum mismatch")
+}
+
+// Not marked as parallel: see TestChecksumMismatch above.
+func TestMalformedPack(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "temp.pack")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = f.Close()
+	})
+
+	_, err = io.Copy(f, io.LimitReader(fixtures.Basic().One().Packfile(), 200))
+	require.NoError(t, err)
+
+	_, err = f.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	scanner := packfile.NewScanner(f)
+	parser, err := packfile.NewParser(scanner)
+	require.NoError(t, err)
+
+	_, err = parser.Parse()
+	require.ErrorContains(t, err, "malformed PACK")
+}
+
+func TestParserRejectsOverflowingObjectHeader(t *testing.T) {
+	t.Parallel()
+
+	// Build a minimal pack whose first (and only) object header advertises
+	// a variable-length size with enough continuation bytes that the
+	// running shift would exceed what an int64 can hold. The decoder must
+	// reject this as malformed input rather than propagate a value that
+	// later flows into a buffer allocation.
+	var body bytes.Buffer
+	body.WriteString("PACK")
+	_ = binary.Write(&body, binary.BigEndian, uint32(2))
+	_ = binary.Write(&body, binary.BigEndian, uint32(1))
+	body.WriteByte(0x90) // type=commit, continuation=1, low nibble=0
+	body.Write(bytes.Repeat([]byte{0x80}, 9))
+
+	sum := sha1.Sum(body.Bytes())
+	body.Write(sum[:])
+
+	scanner := packfile.NewScanner(bytes.NewReader(body.Bytes()))
+	parser, err := packfile.NewParser(scanner)
+	require.NoError(t, err)
+
+	_, err = parser.Parse()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "malformed PACK")
+}
+
 func (s *ParserSuite) TestThinPack(c *C) {
 	fs := osfs.New(c.MkDir())
 	path, err := util.TempDir(fs, "", "")
@@ -131,7 +215,6 @@ func (s *ParserSuite) TestThinPack(c *C) {
 	// Check that our test object is now accessible
 	_, err = r.Storer.EncodedObject(plumbing.CommitObject, plumbing.NewHash(thinpack.Head))
 	c.Assert(err, IsNil)
-
 }
 
 func (s *ParserSuite) TestResolveExternalRefsInThinPack(c *C) {

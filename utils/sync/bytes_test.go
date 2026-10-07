@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -24,6 +25,15 @@ func TestGetAndPutBytesBuffer(t *testing.T) {
 	buf2 := GetBytesBuffer()
 	if buf2.Len() != initialLen {
 		t.Errorf("new bytes buffer length: wanted %d got %d", initialLen, buf2.Len())
+	}
+}
+
+func TestPoolableBytesBufferCapacity(t *testing.T) {
+	if !poolable(bytes.NewBuffer(make([]byte, 0, maxPooledBytesBufferCap))) {
+		t.Errorf("a buffer of capacity %d must be pooled", maxPooledBytesBufferCap)
+	}
+	if poolable(bytes.NewBuffer(make([]byte, 0, maxPooledBytesBufferCap+1))) {
+		t.Errorf("a buffer of capacity %d must not be pooled", maxPooledBytesBufferCap+1)
 	}
 }
 

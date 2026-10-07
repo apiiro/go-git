@@ -7,6 +7,7 @@ import (
 
 	"github.com/gliderlabs/ssh"
 	"github.com/kevinburke/ssh_config"
+	"github.com/stretchr/testify/assert"
 	stdssh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/testdata"
 	. "gopkg.in/check.v1"
@@ -129,10 +130,33 @@ func (s *SuiteCommon) TestFixedHostKeyCallback(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(auth, NotNil)
 	auth.HostKeyCallback = stdssh.FixedHostKey(hostKey.PublicKey())
+	auth.HostKeyAlgorithms = []string{"ssh-ed25519"}
 	ep := uploadPack.newEndpoint(c, "bar.git")
 	ps, err := uploadPack.Client.NewUploadPackSession(ep, auth)
 	c.Assert(err, IsNil)
 	c.Assert(ps, NotNil)
+}
+
+func (s *SuiteCommon) TestFixedHostKeyCallbackUnexpectedAlgorithm(c *C) {
+	hostKey, err := stdssh.ParsePrivateKey(testdata.PEMBytes["ed25519"])
+	c.Assert(err, IsNil)
+	uploadPack := &UploadPackSuite{
+		opts: []ssh.Option{
+			ssh.HostKeyPEM(testdata.PEMBytes["rsa"]),
+		},
+	}
+	uploadPack.SetUpSuite(c)
+	// Use the default client, which does not have a host key callback
+	uploadPack.Client = DefaultClient
+	auth, err := NewPublicKeys("foo", testdata.PEMBytes["rsa"], "")
+	c.Assert(err, IsNil)
+	c.Assert(auth, NotNil)
+	auth.HostKeyCallback = stdssh.FixedHostKey(hostKey.PublicKey())
+	auth.HostKeyAlgorithms = []string{"ssh-ed25519"}
+	ep := uploadPack.newEndpoint(c, "bar.git")
+	ps, err := uploadPack.Client.NewUploadPackSession(ep, auth)
+	c.Assert(err, NotNil)
+	c.Assert(ps, IsNil)
 }
 
 func (s *SuiteCommon) TestFailHostKeyCallback(c *C) {
@@ -228,4 +252,52 @@ func (s *SuiteCommon) TestCommandWithInvalidAuthMethod(c *C) {
 
 	c.Assert(err, NotNil)
 	c.Assert(err, ErrorMatches, "invalid auth method")
+}
+
+func TestEndpointToCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		cmd  string
+		path string
+		want string
+	}{
+		{
+			name: "plain path",
+			cmd:  "git-upload-pack",
+			path: "/repo.git",
+			want: "git-upload-pack '/repo.git'",
+		},
+		{
+			name: "path with single-quote injection payload",
+			cmd:  "git-upload-pack",
+			path: "/repo.git'; touch /tmp/x ; #",
+			want: `git-upload-pack '/repo.git'\''; touch /tmp/x ; #'`,
+		},
+		{
+			name: "bang is escaped for csh history expansion",
+			cmd:  "git-upload-pack",
+			path: "/repo!.git",
+			want: `git-upload-pack '/repo'\!'.git'`,
+		},
+		{
+			name: "mixed quote and bang",
+			cmd:  "git-upload-pack",
+			path: "/a'b!c",
+			want: `git-upload-pack '/a'\''b'\!'c'`,
+		},
+		{
+			name: "inert shell metacharacters pass through",
+			cmd:  "git-upload-pack",
+			path: "/a\\b\"c$d`e",
+			want: "git-upload-pack '/a\\b\"c$d`e'",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ep := &transport.Endpoint{Path: tc.path}
+			assert.Equal(t, tc.want, endpointToCommand(tc.cmd, ep))
+		})
+	}
 }
